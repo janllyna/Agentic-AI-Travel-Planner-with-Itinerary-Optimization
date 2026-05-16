@@ -1,13 +1,19 @@
 from agent import agent_executor
 from tools.weather_tool import get_weather
+from tools.places_tool import discover_places
 
 import re
 
+
+# -----------------------------
+# Extract trip days
+# -----------------------------
 def extract_days(text: str, default=3) -> int:
     match = re.search(r"(\d+)\s*day", text.lower())
     if match:
         return int(match.group(1))
     return default
+
 
 # -----------------------------
 # Decode weather codes
@@ -24,25 +30,30 @@ def decode_weather(code):
         80: "Rain Showers"
     }.get(code, "Unknown")
 
+
 # -----------------------------
 # User input
 # -----------------------------
 query = input("Enter your trip request: ")
 
-# -----------------------------
-# Run agent (ONLY reasoning tasks)
-# -----------------------------
-result = agent_executor.invoke({"input": query})
-steps = result["intermediate_steps"]
 
 # -----------------------------
-# Extract outputs SAFELY
+# Run agent
+# -----------------------------
+result = agent_executor.invoke({"input": query})
+
+steps = result.get("intermediate_steps", [])
+
+
+# -----------------------------
+# Extract outputs safely
 # -----------------------------
 flight = None
 hotel = None
 places = None
 
 for action, output in steps:
+
     tool_name = action.tool
 
     if tool_name == "search_flights" and flight is None:
@@ -55,65 +66,166 @@ for action, output in steps:
         places = output
 
 
+# -----------------------------
+# Safety fallback values
+# -----------------------------
+if flight is None:
+    print("No flight found.")
+    exit()
 
-if not isinstance(places, list):
-    places = list(places)
+if hotel is None:
+    print("No hotel found.")
+    exit()
 
 
 destination = flight["to"]
 
-# -----------------------------
-# Weather (manual, deterministic)
-# -----------------------------
-days = extract_days(query)
-weather_data = get_weather(destination, days)["days"]
 
 # -----------------------------
-# Budget (manual, deterministic)
+# Force places if agent skipped
+# -----------------------------
+if places is None:
+    places = discover_places.invoke(destination)
+
+
+# -----------------------------
+# Safety handling for places
+# -----------------------------
+if places is None:
+    places = []
+
+elif isinstance(places, list):
+    pass
+
+elif isinstance(places, str):
+
+    cleaned = (
+        places
+        .replace("[", "")
+        .replace("]", "")
+        .replace("'", "")
+    )
+
+    places = [
+        p.strip()
+        for p in cleaned.split(",")
+        if p.strip()
+    ]
+
+elif isinstance(places, dict):
+    places = list(places.values())
+
+else:
+    places = [str(places)]
+
+
+# -----------------------------
+# Weather
+# -----------------------------
+days = extract_days(query)
+
+weather_response = get_weather(destination, days)
+
+weather_data = weather_response.get("days", [])
+
+
+# -----------------------------
+# Budget
 # -----------------------------
 flight_cost = flight["price"]
+
 hotel_cost = hotel["price_per_night"] * days
+
 food_cost = days * 1500
-total_cost = flight_cost + hotel_cost + food_cost
+
+total_cost = (
+    flight_cost +
+    hotel_cost +
+    food_cost
+)
+
 
 # -----------------------------
 # FINAL OUTPUT
 # -----------------------------
 print(f"\nYour {days}-Day Trip to {destination}\n")
 
+
+# -----------------------------
+# Flight
+# -----------------------------
 print("Flight Selected:")
-print(f"- {flight['airline']} (₹{flight_cost}) – Departs {flight['from']}\n")
 
+print(
+    f"- {flight['airline']} "
+    f"(₹{flight_cost}) – "
+    f"Departs {flight['from']}\n"
+)
+
+
+# -----------------------------
+# Hotel
+# -----------------------------
 print("Hotel Booked:")
-print(f"- {hotel['name']} (₹{hotel['price_per_night']}/night, {hotel['stars']}-star)\n")
 
+print(
+    f"- {hotel['name']} "
+    f"(₹{hotel['price_per_night']}/night, "
+    f"{hotel['stars']}-star)\n"
+)
+
+
+# -----------------------------
+# Weather
+# -----------------------------
 print("Weather:")
-for d in weather_data:
-    print(f"- Day {d['day']}: {decode_weather(d['code'])} ({d['temp']}°C)")
+
+if weather_data:
+
+    for d in weather_data:
+
+        print(
+            f"- Day {d['day']}: "
+            f"{decode_weather(d['code'])} "
+            f"({d['temp']}°C)"
+        )
+
+else:
+    print("- Weather data unavailable")
+
 print()
 
+
+# -----------------------------
+# Itinerary
+# -----------------------------
 print("Itinerary:")
 
+if places:
 
-if not isinstance(places, list):
-    places = list(places)
+    for day in range(days):
 
-places_per_day = max(1, len(places) // days)
+        place = places[day % len(places)]
 
-for day in range(days):
-    start = day * places_per_day
-    end = start + places_per_day
-    day_places = places[start:end]
+        print(f"Day {day + 1}: {place}")
 
-    if day_places:
-        print(f"Day {day + 1}: {', '.join(day_places)}")
+else:
+    print("No places available.")
 
 print()
 
 
+# -----------------------------
+# Budget
+# -----------------------------
 print("Estimated Total Budget:")
+
 print(f"- Flight: ₹{flight_cost}")
+
 print(f"- Hotel: ₹{hotel_cost}")
+
 print(f"- Food & Travel: ₹{food_cost}")
+
 print("-------------------------------------")
+
 print(f"Total Cost: ₹{total_cost}")
